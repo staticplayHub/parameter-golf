@@ -58,6 +58,8 @@ class Hyperparameters:
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
+    compile_model = bool(int(os.environ.get("COMPILE_MODEL", "1")))
+    compile_fullgraph = bool(int(os.environ.get("COMPILE_FULLGRAPH", "1")))
 
     # Model shape.
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
@@ -892,8 +894,24 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
-    model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
+    use_compile = args.compile_model
+    # Shared recurrent mode currently hits an Inductor scheduler assert on some GPUs.
+    # Keep baseline behavior compiled, but default shared mode to eager unless forced.
+    if base_model.use_shared_blocks and "COMPILE_MODEL" not in os.environ:
+        use_compile = False
+    if use_compile:
+        try:
+            compiled_model = torch.compile(base_model, dynamic=False, fullgraph=args.compile_fullgraph)
+            model_core: nn.Module = compiled_model
+            log0(f"compile:enabled fullgraph:{args.compile_fullgraph}")
+        except Exception as exc:
+            model_core = base_model
+            log0(f"compile:fallback_eager reason:{type(exc).__name__}:{exc}")
+    else:
+        model_core = base_model
+        reason = "shared_recurrent_default_eager" if base_model.use_shared_blocks else "disabled_by_env"
+        log0(f"compile:disabled reason:{reason}")
+    model: nn.Module = DDP(model_core, device_ids=[local_rank], broadcast_buffers=False) if distributed else model_core
 
     # Optimizer split:
     # - token embedding (Adam) uses EMBED_LR
