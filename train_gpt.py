@@ -74,6 +74,7 @@ class Hyperparameters:
     # Optional shared-block recurrence path ("Weird-1"), disabled by default.
     shared_blocks = int(os.environ.get("SHARED_BLOCKS", 0))
     num_passes = int(os.environ.get("NUM_PASSES", 0))
+    pass_scale_init = float(os.environ.get("PASS_SCALE_INIT", 1.0))
 
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
@@ -668,6 +669,7 @@ class GPT(nn.Module):
         qk_gain_init: float,
         shared_blocks: int = 0,
         num_passes: int = 0,
+        pass_scale_init: float = 1.0,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -676,6 +678,8 @@ class GPT(nn.Module):
             raise ValueError(f"shared_blocks must be >= 0, got {shared_blocks}")
         if num_passes < 0:
             raise ValueError(f"num_passes must be >= 0, got {num_passes}")
+        if pass_scale_init < 0.0:
+            raise ValueError(f"pass_scale_init must be >= 0, got {pass_scale_init}")
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
@@ -703,7 +707,7 @@ class GPT(nn.Module):
                 ]
             )
             self.pass_emb = nn.Embedding(self.num_passes, model_dim)
-            self.pass_scale = nn.Parameter(torch.ones(self.num_passes, dtype=torch.float32))
+            self.pass_scale = nn.Parameter(torch.full((self.num_passes,), pass_scale_init, dtype=torch.float32))
         else:
             self.num_passes = num_layers
             self.num_encoder_layers = num_layers // 2
@@ -889,6 +893,7 @@ def main() -> None:
         qk_gain_init=args.qk_gain_init,
         shared_blocks=args.shared_blocks,
         num_passes=args.num_passes,
+        pass_scale_init=args.pass_scale_init,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
